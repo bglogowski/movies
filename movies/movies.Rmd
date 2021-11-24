@@ -1,0 +1,773 @@
+---
+title: "Movie Explorer"
+author: "Bryan Glogowski"
+date: "11/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+library(parallel)
+suppressPackageStartupMessages(library(data.table))
+setDTthreads(percent = 100)
+
+suppressPackageStartupMessages(suppressWarnings(library(kableExtra)))
+
+library(RColorBrewer)
+
+suppressPackageStartupMessages(suppressWarnings(library(dplyr, warn.conflicts = FALSE)))
+options(dplyr.summarise.inform = FALSE)
+library(tidyr)
+
+suppressPackageStartupMessages(suppressWarnings(library(ggplot2)))
+
+library("odbc")
+library("DBI")
+
+
+```
+
+```{r, echo=FALSE}
+get_background_color <- function(data) {
+  
+  #my_pallette <- colorRampPalette(brewer.pal(9, "YlOrRd"))(256)
+  my_pallette <- colorRampPalette(brewer.pal(9, "YlGnBu"))(384)[129:384]
+  
+  min_v <- min(data)
+  max_v <- max(data)
+  
+  my_colors <- rep("#FFFFFF", length(data))
+  
+  range_v <- seq(from = min_v, to = max_v, length.out = 256)
+  
+  c <- 1
+  for (i in data) {
+    x <- which.min(abs(range_v - i))
+    my_colors[c] <- my_pallette[x]
+    c <- c + 1
+  }
+  
+  return(my_colors)
+}
+```
+
+
+
+```{r, echo=FALSE}
+
+
+top10pct <- function(data) {
+  
+  df <- table(unlist(data)) %>%
+    as.data.frame() %>%
+    arrange(desc(Freq))
+  
+  df <-
+    data.frame(df[df$Freq >= df$Freq[floor(length(df$Var1) * 0.10)],])
+  
+  return(df$Var1)
+  
+}
+```
+
+
+
+
+```{r, echo=FALSE}
+show_data <- function(data) {
+  
+  
+  #data <- data[, c("primaryTitle", "year", "runtimeMinutes", "imdb_score", "imdb_votes", "mubi_score", "mubi_votes", "total", "genres", "country", "director", "actors")]
+  
+  data <- data[, c("primaryTitle", "year", "runtimeMinutes", "imdb_score", "mubi_score", "total", "genres", "country", "director", "actors")]
+  
+  my <- c('Title', 'Year', 'Length', 'IMDB Score', 'MUBI Score',
+'Total Score', 'Genre', 'Country', 'Director', 'Actors')
+  
+  data %>%
+    kbl("html", escape = F, row.names = F, col.names = my) %>%
+    kable_classic(full_width = T, html_font = "Helvetica") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+    column_spec(4, width = "4em", bold = T, color = "white", background = spec_color(data$imdb_score, begin = 0.01, end = 0.80)) %>%
+    column_spec(5, width = "4em", bold = T, color = "white", background = spec_color(data$mubi_score, begin = 0.01, end = 0.80)) %>%
+    column_spec(6, width = "4em", bold = T, color = "white", background = spec_color(data$total, begin = 0.01, end = 0.80))
+    
+  #  column_spec(9, width = "6em", bold = T, color = "white", background = spec_color(data$metascore, begin = 0.01, end = 0.80))
+  
+}
+
+```
+
+
+```{r, echo=FALSE}
+
+get_imdb_votes <- function(x) {
+  
+  tmp1 <- x[order(-x$imdb_votes),]
+  tmp1 <- tmp1[tmp1$imdb_votes > 10,] 
+  tmp1 <- tmp1[tmp1$mubi_votes > 10,]
+  tmp1 <- tmp1[1:ceiling(length(tmp1$imdb_votes)*0.75),]
+  
+  return(tmp1)
+
+}
+
+get_mubi_votes <- function(y) {
+  
+  tmp2 <- y[order(-y$mubi_votes),]
+  tmp2 <- tmp2[tmp2$imdb_votes > 10,]
+  tmp2 <- tmp2[tmp2$mubi_votes > 10,]
+  tmp2 <- tmp2[1:ceiling(length(tmp2$mubi_votes)*0.75),]
+  
+  return(tmp2)
+
+}
+
+prepare_data <- function(x, num_elements) {
+  
+  data <- copy(x)
+  
+  #tmp1 <- data[data$imdb_score > 8.0,]
+  #tmp2 <- data[data$mubi_score > 8.0,]
+  
+  #data <- data[data$imdb_score > 7.0,]
+  #data <- data[data$mubi_score > 7.0,]
+  
+  #data <- unique(rbind(tmp1,data))
+  #data <- unique(rbind(tmp2,data))
+  
+  
+  ###tmp1 <- data[order(-data$imdb_votes),]
+  ###tmp1 <- tmp1[tmp1$imdb_votes > 10,] 
+  ###tmp1 <- tmp1[tmp1$mubi_votes > 10,]
+  ###tmp1 <- tmp1[1:ceiling(length(tmp1$imdb_votes)*0.75),]
+  
+  tmp1 <- mcparallel(get_imdb_votes(data))
+   
+  
+  ###tmp2 <- data[order(-data$mubi_votes),]
+  ###tmp2 <- tmp2[tmp2$imdb_votes > 10,]
+  ###tmp2 <- tmp2[tmp2$mubi_votes > 10,]
+  ###tmp2 <- tmp2[1:ceiling(length(tmp2$mubi_votes)*0.75),]
+  
+  tmp2 <- mcparallel(get_mubi_votes(data))
+  
+  res <- mccollect(list(tmp1, tmp2), wait = TRUE)
+  
+  ###data <- unique(rbind(tmp1,tmp2))
+  
+  ##data <- unique(rbind(res[[1]], res[[2]]))
+  
+  data <- unique(rbind(res[[paste0(tmp1$pid)]], res[[paste0(tmp2$pid)]]))
+  
+
+  
+  #data$all_votes <- data$imdb_votes + data$mubi_votes
+  #data <- data[order(-data$all_votes),]
+  #data <- data[1:ceiling(length(data$all_votes)*0.75),]
+  #data <- subset(data, select = -c(all_votes))
+
+  
+  
+  
+  #data$total <- data$mubi_score + data$imdb_score
+  tmp1 <- data[order(-data$imdb_score, -data$imdb_votes),]
+  tmp1 <- tmp1[1:num_elements,]
+  
+  tmp2 <- data[order(-data$mubi_score, -data$mubi_votes),]
+  tmp2 <- tmp2[1:num_elements,]
+  
+  data <- unique(rbind(tmp1,tmp2))
+
+  # User reviews
+  data <- data[order(-data$total, -data$mubi_votes, -data$imdb_votes),]
+  data <- data[1:num_elements,]
+
+  
+
+  data <- data %>%
+    drop_na(primaryTitle) %>%
+    drop_na(runtimeMinutes)
+    
+  data <- data[order(data$year, data$primaryTitle),]
+
+
+  data$primaryTitle <- paste("<a href=https://www.imdb.com/title/", 
+                             data$tconst, "/>", data$primaryTitle, "</a>", sep = "")
+  
+  data <- subset(data, select = -c(originalTitle, tconst))
+
+  data$genres <- mclapply(data$genres, paste0, collapse="<br>")
+  data$country <- mclapply(data$country, paste0, collapse="<br>")
+  
+  data$language <- mclapply(data$language, paste0, collapse="<br>")
+  data$director <- mclapply(data$director, paste0, collapse="<br>")
+  
+  # data$actors <- sapply(data$actors, paste0, collapse=", ")
+  data$actors <- mclapply(data$actors, paste0, collapse=", ")
+  
+  for (a in top10pct(x$actors)) {
+    data$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), data$actors)
+  }
+
+  for (a in top10pct(x$director)) {
+    data$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), data$director)
+  }
+  
+  # p <- mcparallel(1:10)
+  # q <- mcparallel(1:20)
+  # res <- mccollect(list(p, q))
+  
+  return(data)
+  
+}
+```
+
+
+
+```{r, echo=FALSE}
+
+
+con <- dbConnect(odbc::odbc(), "MoviesDSN")
+
+movies <- as.data.frame(dbReadTable(con, name = "all_movie_data"))
+
+movies$genres <- strsplit(movies$genres, split = ",", fixed = TRUE, useBytes = TRUE)
+movies$country <- strsplit(movies$country, split = ",", fixed = TRUE, useBytes = TRUE)
+movies$language <- strsplit(movies$language, split = ",", fixed = TRUE, useBytes = TRUE)
+
+movies$director <- strsplit(movies$director, split = ",", fixed = TRUE, useBytes = TRUE)
+movies$actors <- strsplit(movies$actors, split = ",", fixed = TRUE, useBytes = TRUE)
+
+dbDisconnect(conn = con)
+```
+
+
+
+
+```{r, echo=FALSE}
+noir <- movies[movies$year >= 1940,]
+noir <- noir[noir$year <= 1958,]
+#noir <- subset(movies, year >= 1940 | year <= 1958)
+noir <- noir[grepl("USA|UK", noir$country),]
+noir <- noir[grepl("Film-Noir", noir$genres),]
+```
+
+# Classics of Cinema
+
+### Film Noir
+
+```{r, echo=FALSE}
+plot_data <- aggregate(. ~year, data = noir[, c("year", "primaryTitle")], length)
+
+ggplot(plot_data, aes(x=year, y=primaryTitle)) + 
+  geom_col(fill=get_background_color(plot_data$primaryTitle)) +
+  geom_smooth(formula = y ~ x, method = "loess", se = FALSE, span = 1.17, size=0.5, colour = "black", linetype="twodash") +
+  ylab("Number of Films") +
+  xlab("Year") +
+  ggtitle("Film Noir Productions over Time", subtitle = "Films created between 1941 and 1958") +
+  theme_bw()
+```
+
+
+##### Film Noir: A Baker's Dozen
+
+
+
+
+
+
+```{r, echo=FALSE}
+
+
+m <- prepare_data(noir, 13)
+m$genres <- gsub("Film-Noir", "<b>Film-Noir</b>", m$genres)
+
+
+#ranked_actors <- table(unlist(noir$actors)) %>% 
+#  as.data.frame() %>% 
+#  arrange(desc(Freq))
+
+#ranked_actors <- data.frame(ranked_actors[ranked_actors$Freq >= #ranked_actors$Freq[floor(length(ranked_actors$Var1)*0.10)], ])
+
+#for (a in top10pct(noir$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+
+#ranked_directors <- table(unlist(noir$director)) %>% 
+#  as.data.frame() %>% 
+#  arrange(desc(Freq))
+
+#ranked_directors <- data.frame(ranked_directors[ranked_directors$Freq >= #ranked_directors$Freq[floor(length(ranked_directors$Var1)*0.10)], ])
+
+#for (a in top10pct(noir$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+```
+
+```{r, echo=FALSE}
+show_data(m)
+```
+
+
+
+
+# Romantic Comedies
+
+```{r, echo=FALSE, fig.align="center", fig.width = 14}
+
+g <- "Comedy"
+
+b <- 1980
+e <- 1989
+
+f <- movies[movies$year >= b,]
+f <- f[f$year <= e,]
+f <- f[grepl(g, f$genres),]
+
+# Extra Filters
+f <- f[!grepl("Drama", f$genres),]
+f <- f[!grepl("Horror", f$genres),]
+f <- f[grepl("USA", f$country),]
+
+
+p <- aggregate(. ~year, data = f[, c("year", "primaryTitle")], length)
+
+m_title <- paste0(g, " Productions over Time")
+s_title <- paste0(g, " Films created between ", b, " and ", e)
+
+ggplot(p, aes(x=year, y=primaryTitle)) + 
+  geom_col(fill=get_background_color(p$primaryTitle)) +
+  geom_smooth(formula = y ~ x,
+              method = "loess",
+              se = FALSE,
+              span = 1.17,
+              size=0.5,
+              colour = "black",
+              linetype="twodash") +
+  ylab("Number of Films") +
+  xlab("Year") +
+  ggtitle(m_title, subtitle = s_title) +
+  theme_bw()
+
+m <- prepare_data(f, 25)
+m$genres <- gsub(g, paste0("<b>", g, "</b>"), m$genres)
+
+
+show_data(m)
+
+```
+
+```{r, echo=FALSE, fig.align="center", fig.width = 14, fig.height=8}
+
+top20 <- function(data) {
+  
+  df <- table(unlist(data)) %>%
+    as.data.frame() %>%
+    arrange(desc(Freq))
+  
+  return(df$Var1[1:20])
+  
+}
+
+draw_boxplot <- function(actor_data) {
+  
+  ggplot(actor_data, aes(x = Actor, y = Score, fill = Source)) +
+    theme_minimal() +
+    geom_boxplot(width = 0.4) +
+    theme(axis.text.x = element_text(
+      angle = 60,
+      vjust = 1,
+      hjust = 1,
+      size = 14
+    )) +
+    xlab("") +
+    ylab("Movie Ratings") +
+    ylim(1, 10)
+  
+}
+
+get_actor_data <- function(f) {
+  
+  actor_data <- data.frame()
+  
+  top <- top20(f$actors)
+  
+  for (i in 1:length(f$actors)) {
+    
+    for (actor in f$actors[[i]]) {
+      if (actor %in% top) {
+        
+        #entry <- c(actor, f$imdb_score[[i]], f$mubi_score[[i]], f$total[[i]])
+        entry <- c(actor, "IMDB", f$imdb_score[[i]])
+        actor_data <- rbind(actor_data, entry)
+        
+        entry <- c(actor, "MUBI", f$mubi_score[[i]])
+        actor_data <- rbind(actor_data, entry)
+        
+      }
+    }
+    
+  }
+  
+  names(actor_data)[1] <- "Actor"
+  names(actor_data)[2] <- "Source"
+  names(actor_data)[3] <- "Score"
+  #names(actor_data)[4] <- "total"
+  
+  #model <- lm(imdb ~ mubi, data=actor_data)
+  
+  #plot(imdb ~ mubi, data=actor_data)
+  #abline(model)
+  
+  actor_data$Actor <- as.factor(actor_data$Actor)
+  actor_data$Source <- as.factor(actor_data$Source)
+  actor_data$Score <- as.numeric(actor_data$Score)
+
+  #actor_data$imdb <- as.numeric(actor_data$imdb)
+  #actor_data$mubi <- as.numeric(actor_data$mubi)
+  #actor_data$total <- as.numeric(actor_data$total)
+  
+  return(actor_data)
+}
+
+
+
+#boxplot(total~actor, data = actor_data, main="actors",
+#   xlab="actor", ylab="imdb score")
+
+actor_data <- get_actor_data(f)
+
+draw_boxplot(actor_data)
+
+#ggplot(actor_data, aes(x=Actor, y=Score, fill=Source)) +
+#  theme_minimal() +
+#  stat_boxplot(geom ='errorbar', width = 0.2) +
+#  geom_boxplot(width = 0.4) +
+#  theme(axis.text.x = element_text(angle = 60, vjust = 1, hjust = 1, size = 14)) +
+#  xlab("") + ylab("Movie Ratings")
+  #xlab("Frequently credited Actors") +
+  #ylab("Total Score") +
+  #labs(title = "Actor Success")
+```
+
+
+
+```{r, echo=FALSE, fig.align="center", fig.width = 14, fig.height=8}
+
+##### Other movies featuring these artists
+
+
+
+#tmp1 <- movies[grepl(paste(top10pct(noir$actors), collapse="|"), movies$actors), ]
+#tmp2 <- movies[grepl(paste(top10pct(noir$director), collapse="|"), movies$director), ]
+
+
+#
+# Returns a vector of vectors
+#mlogic <- mclapply(top10pct(noir$actors), grepl, movies$actors, mc.cores = detectCores())
+#
+
+
+#tmp1 <- movies[grepl(paste(m$actors, collapse="|"), movies$actors), ]
+#tmp2 <- movies[grepl(paste(m$director, collapse="|"), movies$director), ]
+
+
+#related <- unique(rbind(tmp1, tmp2))
+
+#notnoir <- related[!grepl("Film-Noir", related$genres), ]
+
+#m <- prepare_data(notnoir, 20)
+
+#for (a in unlist(noir$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+#for (a in unlist(noir$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+
+
+```
+
+
+
+
+
+# Westerns 
+
+```{r, echo=FALSE, fig.align="center", fig.width = 14, fig.height=8}
+
+west <- movies[grepl("Western", movies$genres),]
+
+plot_data <- aggregate(. ~year, data = west[, c("year", "primaryTitle")], length)
+
+ggplot(plot_data, aes(x=year, y=primaryTitle)) + 
+  geom_col(fill=get_background_color(plot_data$primaryTitle)) +
+  geom_smooth(formula = y ~ x, method = "loess", se = FALSE, span = 1.17, size=0.5, colour = "black", linetype="twodash") +
+  ylab("Number of Films") +
+  xlab("Year") +
+  ggtitle("Western Film Productions over Time", subtitle = "Films created between 1938 and 1999") +
+  theme_bw()
+
+
+
+
+```
+## Golden Age of Westerns: Baker's Dozen
+
+```{r, echo=FALSE, fig.align="center", fig.width = 14, fig.height=8}
+w <- west[grepl("USA", west$country),]
+w <- w[!grepl("Italy|Spain", w$country),]
+w <- w[w$year >= 1938,]
+w <- w[w$year <= 1969,]
+
+actor_data <- get_actor_data(w)
+draw_boxplot(actor_data)
+
+
+
+
+m <- prepare_data(w, 13)
+m$genres <- gsub("Western", "<b>Western</b>", m$genres)
+
+#for (a in top10pct(west$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+#for (a in top10pct(west$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+
+show_data(m)
+```
+
+
+## Spaghetti Westerns: Baker's Dozen
+
+
+```{r, echo=FALSE, fig.align="center", fig.width = 14, fig.height=8}
+west <- movies[grepl("Western", movies$genres),]
+w <- west[grepl("Italy|Spain", west$country),]
+w <- w[w$year >= 1964,]
+w <- w[w$year <= 1979,]
+
+actor_data <- get_actor_data(w)
+draw_boxplot(actor_data)
+
+m <- prepare_data(w, 13)
+m$genres <- gsub("Western", "<b>Western</b>", m$genres)
+
+#for (a in top10pct(west$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+#for (a in top10pct(west$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+
+show_data(m)
+```
+
+
+## Revisionist and Neo-Westerns: Baker's Dozen
+
+
+```{r, echo=FALSE, fig.align="center", fig.width = 14, fig.height=8}
+west <- movies[grepl("Western", movies$genres),]
+
+w <- west[grepl("USA", west$country),]
+
+w <- w[w$year >= 1980,]
+w <- w[w$year <= 2019,]
+
+actor_data <- get_actor_data(w)
+draw_boxplot(actor_data)
+
+
+
+
+m <- prepare_data(w, 13)
+m$genres <- gsub("Western", "<b>Western</b>", m$genres)
+
+#for (a in top10pct(west$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+#for (a in top10pct(west$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+
+show_data(m)
+```
+
+
+## The 60's
+
+```{r fig.align="center", echo = FALSE, fig.width = 14}
+usa <- movies[movies$year >= 1960,]
+usa <- usa[usa$year <= 1969,]
+usa <- usa[grepl("USA", usa$country),]
+
+actor_data <- get_actor_data(usa)
+draw_boxplot(actor_data)
+
+
+m <- prepare_data(usa, 13)
+
+#for (a in top10pct(usa$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+#for (a in top10pct(usa$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+
+show_data(m)
+
+```
+
+## The 70's
+
+```{r}
+usa <- movies[movies$year >= 1970,]
+usa <- usa[usa$year <= 1979,]
+usa <- usa[grepl("USA", usa$country),]
+
+m <- prepare_data(usa, 13)
+
+#for (a in top10pct(usa$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+#for (a in top10pct(usa$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+
+show_data(m)
+
+```
+
+
+## The 80's
+
+```{r}
+usa <- movies[movies$year >= 1980,]
+usa <- usa[usa$year <= 1989,]
+usa <- usa[grepl("USA", usa$country),]
+
+m <- prepare_data(usa, 13)
+
+#for (a in top10pct(usa$actors)) {
+#  m$actors <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$actors)
+#}
+
+#for (a in top10pct(usa$director)) {
+#  m$director <- gsub(a, paste("<b>", a, "</b>",sep = ""), m$director)
+#}
+
+show_data(m)
+
+```
+
+
+
+
+## French Cinema: Baker's Dozen
+
+```{r, echo=FALSE}
+
+
+
+french <- movies[grepl("French", movies$language),]
+french <- french[!grepl("USA", french$country),]
+french <- french[grepl("France|Canada|Belgium|Switzerland|Senegal|Côte d'Ivoire|Haiti|Benin", french$country),]
+
+
+
+```
+
+
+```{r}
+plot_data <- aggregate(. ~year, data = french[, c("year", "primaryTitle")], length)
+
+ggplot(plot_data, aes(x=year, y=primaryTitle)) + 
+  geom_col(fill=get_background_color(plot_data$primaryTitle)) +
+  geom_smooth(formula = y ~ x, method = "loess", se = FALSE, span = 1.17, size=0.5, colour = "black", linetype="twodash") +
+  ylab("Number of Films") +
+  xlab("Year") +
+  ggtitle("French Film Production over Time", subtitle = "Films featuring the French language") +
+  theme_bw()
+```
+
+
+## French New Wave (1958-1969) : Baker's Dozen
+```{r, echo=FALSE}
+
+    
+
+#french <- french[!grepl("USA", french$country),]
+    
+f <- french[french$year >= 1958,]
+f <- f[f$year <= 1967,]
+f <- f[grepl("Jean-Luc Godard|Éric Rohmer|François Truffaut|Claude Chabrol|Jacques Rivette|Agnès Varda|Alain Resnais|Chris Marker|Henri Colpi|Jacques Demy|Alexandre Astruc|Jacques Doniol-Valcroze|Jean Douchet|Marguerite Duras|Jean Eustache|Georges Franju|Philippe Garrel|Pierre Kast|William Klein|Louis Malle|Jean-Pierre Melville|Luc Moullet|Alain Robbe-Grillet|Jean Rouch|Jacques Rozier|Straub-Huillet|Roger Vadim", f$director),]
+
+m <- prepare_data(f, 13)
+
+show_data(m)
+```
+
+
+
+
+## Top 40 Japanese Films
+
+```{r, echo=FALSE}
+
+
+
+japan <- movies[grepl("Japan", movies$country),]
+japan <- japan[!grepl("USA", japan$country),]
+japan <- japan[grepl("Japanese", japan$language),]
+japan <- japan[!grepl("Animation", japan$genres),]
+
+
+```
+
+```{r, echo=FALSE}
+plot_data <- aggregate(. ~year, data = japan[, c("year", "primaryTitle")], length)
+
+ggplot(plot_data, aes(x=year, y=primaryTitle)) + 
+  geom_col(fill=get_background_color(plot_data$primaryTitle)) +
+  geom_smooth(formula = y ~ x, method = "loess", se = FALSE, span = 1.17, size=0.5, colour = "black", linetype="twodash") +
+  ylab("Number of Films") +
+  xlab("Year") +
+  ggtitle("Japanese Film Production over Time", subtitle = "Films created filmed in Japan featuring the Japanese language") +
+  theme_bw()
+```
+
+## Japanese Golden Age: 1950-1970
+```{r, echo=FALSE}
+
+j <- japan[japan$year >= 1950,]
+j <- j[j$year <= 1970,]
+
+m <- prepare_data(j, 12)
+show_data(m)
+
+```
+
+## Modern Japanese films: 1980-2020
+```{r, echo=FALSE}
+j <- japan[japan$year >= 1980,]
+j <- j[j$year <= 2020,]
+
+m <- prepare_data(j, 12)
+show_data(m)
+
+```
+
